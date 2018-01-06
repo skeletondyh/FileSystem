@@ -123,11 +123,6 @@ public:
 		delete[] dirty;
 		delete[] IDinfile;
 		delete[] IDincache;
-		/*for (int i = 0; i < CAPACITY; i++) {
-			if (table[i] != NULL)
-				delete[] table[i];
-		}
-		delete[] table;*/
 	}
 };
 
