@@ -1,6 +1,42 @@
 #include "BufManager.h"
 #include <assert.h>
 
+void RemoveDir(BufManager * Bufm, super_block * sp, inode * pnode) {
+
+	/* 保存当前状态  页表在递归过程中随时会被更新 */
+	int tempblock = pnode->i_block;					
+	int tempi = pnode->i_id;
+
+	int iindex;
+	int dataindex;
+
+	int dirnum = pnode->i_file_size / DIR_ENTRY_SIZE;
+	dir_block * cdir = (dir_block *)Bufm->getPage(SUPER_NUM + INDEX_PAGE_NUM + pnode->i_block, dataindex);
+
+	for (int i = 2; i < dirnum; i++) {
+		char * nodepage = Bufm->getPage(SUPER_NUM + cdir->dirs[i].inode_id / INDEX_NUM_PER_PAGE, iindex);
+		pnode = (inode *)(nodepage + INDEX_SIZE * (cdir->dirs[i].inode_id % INDEX_NUM_PER_PAGE));
+		if (pnode->i_mode == 0) {
+			RemoveDir(Bufm, sp, pnode);
+		}
+		else {
+			sp->inode_bitmap[pnode->i_id] = false;
+			sp->block_bitmap[pnode->i_block] = false;
+			Bufm->remove(SUPER_NUM + INDEX_PAGE_NUM + pnode->i_block);
+		}
+
+		cdir = (dir_block *)Bufm->getPage(SUPER_NUM + INDEX_PAGE_NUM + tempblock, dataindex);
+		nodepage = Bufm->getPage(SUPER_NUM + tempi / INDEX_NUM_PER_PAGE, iindex);
+		pnode = (inode *)(nodepage + INDEX_SIZE * (tempi % INDEX_NUM_PER_PAGE));
+	}
+
+	sp->inode_bitmap[tempi] = false;
+	sp->block_bitmap[tempblock] = false;
+	Bufm->release(dataindex);
+	return;
+}
+
+
 int main()
 {
 	/* 命令处理所需 */
@@ -187,52 +223,6 @@ int main()
 								}
 							}
 							p = p + 1;
-								/* 首先修改当前目录和当前索引节点 */
-								/*memset(temproot->dirs[i].name, 0, DIR_SIZE);
-								strcpy(temproot->dirs[i].name, temp);
-								printf("new dir: %s\n", temproot->dirs[i].name);
-
-								for (int k = 0; k < INDEX_NUM; k++) {
-									if (sp->inode_bitmap[k] == false) {
-										sp->inode_bitmap[k] = true;
-										temproot->dirs[i].inode_id = k;
-										break;
-									}
-								}
-								pnode->i_file_size += DIR_ENTRY_SIZE;
-								Bufm->markDirty(tempdata_index);
-								Bufm->markDirty(tempi_index);*/
-
-								/* 然后得到新增的节点页 */
-								/*char * newinodepage;
-								inode *newnode;
-								dir_block *newdir;
-
-								newinodepage = Bufm->getPage(SUPER_NUM + temproot->dirs[i].inode_id / INDEX_NUM_PER_PAGE, tempi_index);
-								newnode = (inode *)(newinodepage + INDEX_SIZE * (temproot->dirs[i].inode_id % INDEX_NUM_PER_PAGE));
-								newnode->i_file_size = DIR_ENTRY_SIZE;
-								newnode->i_mode = 0;
-								newnode->i_id = temproot->dirs[i].inode_id;
-								for (int k = 0; k < PAGE_SIZE; k++) {
-									if (sp->block_bitmap[k] == false) {
-										sp->block_bitmap[k] = true;
-										newnode->i_block = k;
-										break;
-									}
-								}
-								Bufm->markDirty(tempi_index);*/
-								
-								/* 得到新增的目录块 */
-								/*newdir = (dir_block *)Bufm->getPage(SUPER_NUM + INDEX_PAGE_NUM + newnode->i_block, tempdata_index);
-								newdir->dirs[0].inode_id = newnode->i_id;
-								strcpy(newdir->dirs[0].name, temp);
-
-								newdir->dirs[1].inode_id = pnode->i_id;
-								strcpy(newdir->dirs[1].name, temproot->dirs[0].name);
-								printf("new father dir: %s\n", newdir->dirs[1].name);
-
-								Bufm->markDirty(tempdata_index);
-								break;*/
 						}
 					}
 					else {
@@ -307,6 +297,76 @@ int main()
 							printf("%s is not a file\n", buffer);
 						}
 						else {															// 删除单个文件
+
+							sp->block_bitmap[pnode->i_block] = false;					// 先在位图中标记为不占用
+							sp->inode_bitmap[pnode->i_id] = false;
+
+							Bufm->release(tempdata_index);								// 将其缓存页释放
+
+							/* 得到父亲索引节点和父目录页 */
+							char * parentipage = Bufm->getPage(SUPER_NUM + pnode->parent / INDEX_NUM_PER_PAGE, tempi_index);
+							inode * parentnode = (inode *)(parentipage + INDEX_SIZE * (pnode->parent % INDEX_NUM_PER_PAGE));
+							dir_block * parentdir = (dir_block *)(Bufm->getPage(SUPER_NUM + INDEX_PAGE_NUM + parentnode->i_block, tempdata_index));
+
+							/* 修改父亲索引节点和父目录页 */
+							int dirnum = parentnode->i_file_size / DIR_ENTRY_SIZE;
+							for (int i = 1; i < dirnum; i++) {
+								if (i == 1 && parentdir->dirs[0].inode_id != 0) {
+									continue;
+								}
+								if (strcmp(temp, parentdir->dirs[i].name) == 0) {
+									for (int j = i; j < dirnum - 1; j++) {
+										memcpy((void *)parentdir->dirs[j].name, (void *)parentdir->dirs[j + 1].name, DIR_ENTRY_SIZE);
+									}
+									break;
+								}
+							}
+
+							parentnode->i_file_size -= DIR_ENTRY_SIZE;
+
+							Bufm->markDirty(tempdata_index);
+							Bufm->markDirty(tempi_index);
+						}
+					}
+					else if (strcmp(cmd, "rmdir") == 0) {
+						if (noneExit) {
+							printf("%s No such directory\n", buffer);
+						}
+						else if (isFile) {
+							printf("%s is not a directory\n", buffer);
+						}
+						else {
+
+							if (temproot->dirs[0].inode_id != 0) {						// 无法删除根目录
+
+								int tempparent = pnode->parent;							// 先把父亲节点存起来
+
+								RemoveDir(Bufm, sp, pnode);
+
+								/* 得到父亲索引节点和父目录页 */
+								char * parentipage = Bufm->getPage(SUPER_NUM + tempparent / INDEX_NUM_PER_PAGE, tempi_index);
+								inode * parentnode = (inode *)(parentipage + INDEX_SIZE * (tempparent % INDEX_NUM_PER_PAGE));
+								dir_block * parentdir = (dir_block *)(Bufm->getPage(SUPER_NUM + INDEX_PAGE_NUM + parentnode->i_block, tempdata_index));
+
+								/* 修改父亲索引节点和父目录页 */
+								int dirnum = parentnode->i_file_size / DIR_ENTRY_SIZE;
+								for (int i = 1; i < dirnum; i++) {
+									if (i == 1 && parentdir->dirs[0].inode_id != 0) {
+										continue;
+									}
+									if (strcmp(temp, parentdir->dirs[i].name) == 0) {
+										for (int j = i; j < dirnum - 1; j++) {
+											memcpy((void *)parentdir->dirs[j].name, (void *)parentdir->dirs[j + 1].name, DIR_ENTRY_SIZE);
+										}
+										break;
+									}
+								}
+
+								parentnode->i_file_size -= DIR_ENTRY_SIZE;
+
+								Bufm->markDirty(tempdata_index);
+								Bufm->markDirty(tempi_index);
+							}
 
 						}
 					}

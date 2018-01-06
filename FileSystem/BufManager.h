@@ -60,6 +60,16 @@ public:
 		access(index);
 	}
 
+	void release(int index) {
+		dirty[index] = false;
+		replace->freepage(index);
+	}
+
+	void remove(int pageID) {
+		if (IDincache[pageID] != -1) {
+			release(IDincache[pageID]);
+		}
+	}
 
 	/* 为文件中的一个Page在Buf中获取一页 */
 	char * getPage(int PageID, int &index, bool ifread = true) {
